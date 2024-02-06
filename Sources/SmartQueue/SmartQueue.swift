@@ -111,9 +111,8 @@ public actor SmartQueue<Dependency> {
         if Task.isCancelled {
             return .cancelled(isOriginTask: true)
         }
-        
-        if isRefreshing == false && forceRun == false {
-            // We're not refreshing
+        if isRefreshing == false || forceRun == true {
+            // We're not refreshing or we're force running.
             
             let taskRunWithVersion = dependencyVersion
             
@@ -158,7 +157,8 @@ public actor SmartQueue<Dependency> {
                         case .cancelled:
                             continuation.resume(returning: .cancelled(isOriginTask: false))
                         case .retry:
-                            await continuation.resume(returning: self.run(forceRun: true, task: task))
+                            let result = await self.run(forceRun: true, task: task)
+                            continuation.resume(returning: result)
                         case let .failure(error):
                             continuation.resume(returning: .failure(error: error, isOriginTask: false))
                     }
@@ -184,20 +184,27 @@ public actor SmartQueue<Dependency> {
                         await queuedTask.run(input: .retry)
                     }
                 }
+                queue.removeAll()
                 self.isRefreshing = false
                 return await run(task: task)
                     .withTaskCancellation(isOriginTask: true)
             case let .failure(failure):
                 for queuedTask in queue {
-                    await queuedTask.run(input: .failure(failure))
+                    Task {
+                        await queuedTask.run(input: .failure(failure))
+                    }
                 }
+                queue.removeAll()
                 self.isRefreshing = false
                 return .failure(error: failure, isOriginTask: true)
                     .withTaskCancellation(isOriginTask: true)
             case .cancelled:
                 for queuedTask in queue {
-                    await queuedTask.run(input: .cancelled)
+                    Task {
+                        await queuedTask.run(input: .cancelled)
+                    }
                 }
+                queue.removeAll()
                 self.isRefreshing = false
                 return .cancelled(isOriginTask: true)
         }

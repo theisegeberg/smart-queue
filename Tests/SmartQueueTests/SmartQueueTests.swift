@@ -2,11 +2,13 @@
 import XCTest
 
 final class smart_queueTests: XCTestCase {
-    enum OAuthError {
-        case unauthorized
-    }
-
+    
     func testBasics() async throws {
+        
+        enum OAuthError {
+            case unauthorized
+        }
+
         let password = "bingo"
         let responseValue = "Great stuff \(UUID().uuidString)"
         let tester = QueueTester(password: password)
@@ -59,7 +61,7 @@ final class smart_queueTests: XCTestCase {
     }
 
     
-    func testTricky() async throws {
+    func testWithKnownResponses() async throws {
         
         struct KnownResponse {
             enum RType {
@@ -102,7 +104,6 @@ final class smart_queueTests: XCTestCase {
                 defer {
                     index += 1
                 }
-                let retVal = self.responses[index]
                 return self.responses[index]
             }
         }
@@ -189,7 +190,7 @@ final class smart_queueTests: XCTestCase {
         
     }
     
-    func testWhacky() async throws {
+    func testBruteForce() async throws {
 
         class WonkyResponder {
             var access:Int
@@ -254,7 +255,108 @@ final class smart_queueTests: XCTestCase {
                 }
             }
         }
+        try! await Task.sleep(nanoseconds: 1_000_000_00)
+        
+    }
+    
+    func testControlledResponses() async throws {
+        
+        class ControlledResponse<T>:Identifiable {
+            let id:UUID
+            let response:T
+            let expectation:XCTestExpectation
+            let description:String
+            var continuation:CheckedContinuation<T,Never>? = nil
+            var continued:Bool
+            var completed:Bool = false
+            
+            init(response: T, description:String, continued:Bool = false) {
+                self.id = UUID()
+                self.response = response
+                let expectation = XCTestExpectation(description: description)
+                expectation.expectedFulfillmentCount = 1
+                expectation.assertForOverFulfill = true
+                self.expectation = expectation
+                self.description = description
+                self.continued = continued
+            }
+            
+            func getResponse() async -> T {
+                print("Requested: \(self.description)")
+                if self.continued {
+                    expectation.fulfill()
+                    self.completed = true
+                    print("Responding auto: \(self.description)")
+                    return response
+                } else {
+                    return await withCheckedContinuation { continuation in
+                        self.continuation = continuation
+                    }
+                }
+            }
+            
+            func respond() {
+                guard let continuation else {
+                    self.continued = true
+                    return
+                }
+                if self.continued == false {
+                    self.continued = true
+                    self.completed = true
+                    expectation.fulfill()
+                    print("Responding triggered: \(self.description)")
+                    continuation.resume(returning: response)
+                    self.continuation = nil
+                }
+            }
+        }
+        
+        let refreshUuid1 = UUID()
+        let refresh1:ControlledResponse<RefreshTaskResult<UUID>> = .init(response: .success(refreshUuid1), description: "Refresh1")
+        let refreshUuid2 = UUID()
+        let refresh2:ControlledResponse<RefreshTaskResult<UUID>> = .init(response: .success(refreshUuid2), description: "Refresh2")
+        let access1:ControlledResponse<TaskResult<String>> = .init(response: .success("Great1"), description: "Access1")
+        let access2:ControlledResponse<TaskResult<String>> = .init(response: .success("Great2"), description: "Access2")
+        
+        let smartQueue = SmartQueue<UUID> { context in
+            if refresh1.completed == false {
+                return await refresh1.getResponse()
+            }
+            if refresh2.completed == false {
+                return await refresh2.getResponse()
+            }
+            fatalError()
+        }
+        
+        Task {
+            let r2 = await smartQueue.run { token in
+                return await access2.getResponse()
+            }
+            print("Task got: \(r2)")
+        }
+        
         try! await Task.sleep(nanoseconds: 1_000_000)
+        
+        Task {
+            let r1 = await smartQueue.run { token in
+                return await access1.getResponse()
+            }
+            print("Task got: \(r1)")
+        }
+        
+        
+        try! await Task.sleep(nanoseconds: 1_000_000)
+        
+        access2.respond()
+        access1.respond()
+        refresh1.respond()
+
+        await Task.yield()
+        
+        await Task.yield()
+        try! await Task.sleep(nanoseconds: 1_000_000)
+        
+        
         
     }
     
