@@ -58,8 +58,6 @@ extension FinalResult:Equatable where Success:Equatable {
                 return false
         }
     }
-    
-    
 }
 
 private enum QueuedTaskInput {

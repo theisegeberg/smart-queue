@@ -261,62 +261,36 @@ final class smart_queueTests: XCTestCase {
     
     func testControlledResponses() async throws {
         
-        class ControlledResponse<T>:Identifiable {
-            let id:UUID
-            let response:T
-            let expectation:XCTestExpectation
-            let description:String
-            var continuation:CheckedContinuation<T,Never>? = nil
-            var continued:Bool
-            var completed:Bool = false
-            
-            init(response: T, description:String, continued:Bool = false) {
-                self.id = UUID()
-                self.response = response
-                let expectation = XCTestExpectation(description: description)
-                expectation.expectedFulfillmentCount = 1
-                expectation.assertForOverFulfill = true
-                self.expectation = expectation
-                self.description = description
-                self.continued = continued
-            }
-            
-            func getResponse() async -> T {
-                print("Requested: \(self.description)")
-                if self.continued {
-                    expectation.fulfill()
-                    self.completed = true
-                    print("Responding auto: \(self.description)")
-                    return response
-                } else {
-                    return await withCheckedContinuation { continuation in
-                        self.continuation = continuation
-                    }
-                }
-            }
-            
-            func respond() {
-                guard let continuation else {
-                    self.continued = true
-                    return
-                }
-                if self.continued == false {
-                    self.continued = true
-                    self.completed = true
-                    expectation.fulfill()
-                    print("Responding triggered: \(self.description)")
-                    continuation.resume(returning: response)
-                    self.continuation = nil
-                }
+        
+        let timeLogger = TimeLog()
+        @Sendable func timeLog(_ string:String) {
+            Task {
+                await timeLogger.add(string)
             }
         }
         
+        @Sendable func execute<T>(_ controlledResponse:ControlledResponse<TaskResult<T>>) async {
+            let r:FinalResult<T> = await smartQueue.run { token in
+                return await controlledResponse.getResponse()
+            }
+            timeLog("SmartQueue responded: \(r)")
+            
+        }
+        
+        func makeRefresh(_ result:RefreshTaskResult<UUID>, count:Int) -> ControlledResponse<RefreshTaskResult<UUID>> {
+            ControlledResponse(response: result, description: "Refresh \(count)", logger: timeLog)
+        }
+        
+        func makeAccessSuccess(count:Int) -> ControlledResponse<TaskResult<String>> {
+            ControlledResponse(response: .success("Access \(count)"), description: "Access \(count)", logger: timeLog)
+        }
+        
         let refreshUuid1 = UUID()
-        let refresh1:ControlledResponse<RefreshTaskResult<UUID>> = .init(response: .success(refreshUuid1), description: "Refresh1")
+        let refresh1 = makeRefresh(.success(refreshUuid1), count: 1)
         let refreshUuid2 = UUID()
-        let refresh2:ControlledResponse<RefreshTaskResult<UUID>> = .init(response: .success(refreshUuid2), description: "Refresh2")
-        let access1:ControlledResponse<TaskResult<String>> = .init(response: .success("Great1"), description: "Access1")
-        let access2:ControlledResponse<TaskResult<String>> = .init(response: .success("Great2"), description: "Access2")
+        let refresh2 = makeRefresh(.success(refreshUuid2), count: 2)
+        let access1 = makeAccessSuccess(count: 1)
+        let access2 = makeAccessSuccess(count: 2)
         
         let smartQueue = SmartQueue<UUID> { context in
             if refresh1.completed == false {
@@ -329,33 +303,20 @@ final class smart_queueTests: XCTestCase {
         }
         
         Task {
-            let r2 = await smartQueue.run { token in
-                return await access2.getResponse()
-            }
-            print("Task got: \(r2)")
+            await execute(access1)
+            await execute(access2)
         }
-        
-        try! await Task.sleep(nanoseconds: 1_000_000)
         
         Task {
-            let r1 = await smartQueue.run { token in
-                return await access1.getResponse()
-            }
-            print("Task got: \(r1)")
+            access1.respond()
+            access2.respond()
+            refresh1.respond()
         }
         
-        
         try! await Task.sleep(nanoseconds: 1_000_000)
         
-        access2.respond()
-        access1.respond()
-        refresh1.respond()
-
-        await Task.yield()
-        
-        await Task.yield()
-        try! await Task.sleep(nanoseconds: 1_000_000)
-        
+        let theLog = await timeLogger.textLog()
+        print(theLog)
         
         
     }
