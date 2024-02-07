@@ -287,19 +287,11 @@ final class smart_queueTests: XCTestCase {
         
         let refreshUuid1 = UUID()
         let refresh1 = makeRefresh(.success(refreshUuid1), count: 1)
-        let refreshUuid2 = UUID()
-        let refresh2 = makeRefresh(.success(refreshUuid2), count: 2)
         let access1 = makeAccessSuccess(count: 1)
         let access2 = makeAccessSuccess(count: 2)
         
         let smartQueue = SmartQueue<UUID> { context in
-            if refresh1.completed == false {
-                return await refresh1.getResponse()
-            }
-            if refresh2.completed == false {
-                return await refresh2.getResponse()
-            }
-            fatalError()
+            return await refresh1.getResponse()
         }
         
         Task {

@@ -87,6 +87,10 @@ public actor SmartQueue<Dependency> {
     private var refreshTask: (_ context: RefreshContext) async -> RefreshTaskResult<Dependency>
     private var isRunningQueue:Bool = false
     
+    /// Creates a new SmartQueue.
+    /// - Parameters:
+    ///   - dependency: A predefined dependency value.
+    ///   - refreshTask: A task showing how to refresh the dependency.
     public init(dependency: Dependency? = nil, refreshTask: @escaping (_ context: RefreshContext) async -> RefreshTaskResult<Dependency>) {
         self.dependency = dependency
         self.refreshTask = refreshTask
