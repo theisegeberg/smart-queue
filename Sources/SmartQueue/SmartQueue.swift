@@ -15,8 +15,15 @@ public enum TaskResult<Success> {
     }
 }
 
-public struct RefreshContext {
+public enum RefreshReason {
+    case missingDependency
+    case taskRequiredUpdate
+}
+
+public struct RefreshContext<Dependency> {
     public let refreshAttempt: Int
+    public let lastDependency: Dependency?
+    public let reason:RefreshReason
 }
 
 public enum RefreshTaskResult<Dependency> {
@@ -84,14 +91,14 @@ public actor SmartQueue<Dependency> {
     private var queue: [QueuedTask] = []
     private var isRefreshing: Bool = false
     private var refreshAttempt: Int = 0
-    private var refreshTask: (_ context: RefreshContext) async -> RefreshTaskResult<Dependency>
+    private var refreshTask: (_ context: RefreshContext<Dependency>) async -> RefreshTaskResult<Dependency>
     private var isRunningQueue:Bool = false
     
     /// Creates a new SmartQueue.
     /// - Parameters:
     ///   - dependency: A predefined dependency value.
     ///   - refreshTask: A task showing how to refresh the dependency.
-    public init(dependency: Dependency? = nil, refreshTask: @escaping (_ context: RefreshContext) async -> RefreshTaskResult<Dependency>) {
+    public init(dependency: Dependency? = nil, refreshTask: @escaping (_ context: RefreshContext<Dependency>) async -> RefreshTaskResult<Dependency>) {
         self.dependency = dependency
         self.refreshTask = refreshTask
     }
@@ -142,12 +149,12 @@ public actor SmartQueue<Dependency> {
                             .withTaskCancellation(isOriginTask: true)
                     case .updateDependency:
                         // Not refreshing
-                        return await updateDependency(task: task)
+                        return await updateDependency(reason: .taskRequiredUpdate, task: task)
                             .withTaskCancellation(isOriginTask: true)
                 }
             } else {
                 // There is no dependency present
-                return await updateDependency(task: task)
+                return await updateDependency(reason: .missingDependency, task: task)
                     .withTaskCancellation(isOriginTask: true)
             }
             
@@ -170,11 +177,12 @@ public actor SmartQueue<Dependency> {
     }
     
     private func updateDependency<Success>(
+        reason: RefreshReason,
         task: @escaping (Dependency) async -> TaskResult<Success>
     ) async -> FinalResult<Success> {
         isRefreshing = true
         refreshAttempt += 1
-        let context = RefreshContext(refreshAttempt: refreshAttempt + 1)
+        let context = RefreshContext(refreshAttempt: refreshAttempt, lastDependency: self.dependency, reason: reason)
         let refreshResult = await refreshTask(context).withTaskCancellation(isOriginTask: true)
         switch refreshResult {
             case let .success(dependency):
