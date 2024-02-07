@@ -113,6 +113,12 @@ public actor SmartQueue<Dependency> {
         await self.run(forceRun: false, task: task)
     }
     
+    /// Manually set the dependency.
+    /// - Parameter dependency: A new dependency or nil if you want to remove it.
+    public func setDependency(_ dependency:Dependency?) async {
+        self.dependency = dependency
+    }
+    
     private func run<Success>(
         forceRun: Bool = false,
         task: @escaping (Dependency) async -> TaskResult<Success>
