@@ -15,8 +15,14 @@ public enum TaskResult<Success> {
     }
 }
 
-public struct RefreshContext {
+public enum RefreshReason<Dependency> {
+    case missingDependency
+    case taskRequiredUpdate(dependency:Dependency)
+}
+
+public struct RefreshContext<Dependency> {
     public let refreshAttempt: Int
+    public let reason:RefreshReason<Dependency>
 }
 
 public enum RefreshTaskResult<Dependency> {
@@ -48,14 +54,14 @@ public enum FinalResult<Success> {
 extension FinalResult:Equatable where Success:Equatable {
     public static func == (lhs: FinalResult<Success>, rhs: FinalResult<Success>) -> Bool {
         switch (lhs,rhs) {
-            case (.success(let left),.success(let right)):
-                return left == right
-            case (.failure(_, let left),.failure(_, let right)):
-                return left == right
-            case (.cancelled(let left),.cancelled(let right)):
-                return left == right
-            default:
-                return false
+        case (.success(let left),.success(let right)):
+            return left == right
+        case (.failure(_, let left),.failure(_, let right)):
+            return left == right
+        case (.cancelled(let left),.cancelled(let right)):
+            return left == right
+        default:
+            return false
         }
     }
 }
@@ -84,14 +90,14 @@ public actor SmartQueue<Dependency> {
     private var queue: [QueuedTask] = []
     private var isRefreshing: Bool = false
     private var refreshAttempt: Int = 0
-    private var refreshTask: (_ context: RefreshContext) async -> RefreshTaskResult<Dependency>
+    private var refreshTask: (_ context: RefreshContext<Dependency>) async -> RefreshTaskResult<Dependency>
     private var isRunningQueue:Bool = false
     
     /// Creates a new SmartQueue.
     /// - Parameters:
     ///   - dependency: A predefined dependency value.
     ///   - refreshTask: A task showing how to refresh the dependency.
-    public init(dependency: Dependency? = nil, refreshTask: @escaping (_ context: RefreshContext) async -> RefreshTaskResult<Dependency>) {
+    public init(dependency: Dependency? = nil, refreshTask: @escaping (_ context: RefreshContext<Dependency>) async -> RefreshTaskResult<Dependency>) {
         self.dependency = dependency
         self.refreshTask = refreshTask
     }
@@ -104,6 +110,12 @@ public actor SmartQueue<Dependency> {
         task: @escaping (Dependency) async -> TaskResult<Success>
     ) async -> FinalResult<Success> {
         await self.run(forceRun: false, task: task)
+    }
+    
+    /// Manually set the dependency.
+    /// - Parameter dependency: A new dependency or nil if you want to remove it.
+    public func setDependency(_ dependency:Dependency?) async {
+        self.dependency = dependency
     }
     
     private func run<Success>(
@@ -120,34 +132,37 @@ public actor SmartQueue<Dependency> {
             
             if let dependency {
                 // There is a dependency present
+                
+                let taskRunWithDependency = dependency
+                
                 switch await task(dependency)
                     .withTaskCancellation(isOriginTask: true)
                 {
-                    case let .success(success):
-                        // The task was succesful
-                        return .success(success: success)
-                            .withTaskCancellation(isOriginTask: true)
-                    case let .failure(failure):
-                        // The task failed
-                        return .failure(error: failure, isOriginTask: true)
-                            .withTaskCancellation(isOriginTask: true)
-                    case .cancelled:
-                        // The task was cancelled
-                        return .cancelled(isOriginTask: true)
-                    case .updateDependency where isRefreshing,
-                            .updateDependency where taskRunWithVersion < dependencyVersion:
-                        // The task is currently refreshing
-                        // The task was run with a lower dependency version
-                        return await run(task: task)
-                            .withTaskCancellation(isOriginTask: true)
-                    case .updateDependency:
-                        // Not refreshing
-                        return await updateDependency(task: task)
-                            .withTaskCancellation(isOriginTask: true)
+                case let .success(success):
+                    // The task was succesful
+                    return .success(success: success)
+                        .withTaskCancellation(isOriginTask: true)
+                case let .failure(failure):
+                    // The task failed
+                    return .failure(error: failure, isOriginTask: true)
+                        .withTaskCancellation(isOriginTask: true)
+                case .cancelled:
+                    // The task was cancelled
+                    return .cancelled(isOriginTask: true)
+                case .updateDependency where isRefreshing,
+                        .updateDependency where taskRunWithVersion < dependencyVersion:
+                    // The task is currently refreshing
+                    // The task was run with a lower dependency version
+                    return await run(task: task)
+                        .withTaskCancellation(isOriginTask: true)
+                case .updateDependency:
+                    // Not refreshing
+                    return await updateDependency(reason: RefreshReason<Dependency>.taskRequiredUpdate(dependency: taskRunWithDependency), task: task)
+                        .withTaskCancellation(isOriginTask: true)
                 }
             } else {
                 // There is no dependency present
-                return await updateDependency(task: task)
+                return await updateDependency(reason: RefreshReason<Dependency>.missingDependency, task: task)
                     .withTaskCancellation(isOriginTask: true)
             }
             
@@ -156,13 +171,13 @@ public actor SmartQueue<Dependency> {
             return await withCheckedContinuation { continuation in
                 self.queue.append(QueuedTask(task: { input in
                     switch input {
-                        case .cancelled:
-                            continuation.resume(returning: .cancelled(isOriginTask: false))
-                        case .retry:
-                            let result = await self.run(forceRun: true, task: task)
-                            continuation.resume(returning: result)
-                        case let .failure(error):
-                            continuation.resume(returning: .failure(error: error, isOriginTask: false))
+                    case .cancelled:
+                        continuation.resume(returning: .cancelled(isOriginTask: false))
+                    case .retry:
+                        let result = await self.run(forceRun: true, task: task)
+                        continuation.resume(returning: result)
+                    case let .failure(error):
+                        continuation.resume(returning: .failure(error: error, isOriginTask: false))
                     }
                 }))
             }
@@ -170,46 +185,50 @@ public actor SmartQueue<Dependency> {
     }
     
     private func updateDependency<Success>(
+        reason: RefreshReason<Dependency>,
         task: @escaping (Dependency) async -> TaskResult<Success>
     ) async -> FinalResult<Success> {
         isRefreshing = true
         refreshAttempt += 1
-        let context = RefreshContext(refreshAttempt: refreshAttempt + 1)
+        let context = RefreshContext(refreshAttempt: refreshAttempt, reason: reason)
         let refreshResult = await refreshTask(context).withTaskCancellation(isOriginTask: true)
         switch refreshResult {
-            case let .success(dependency):
-                self.dependency = dependency
-                dependencyVersion += 1
-                refreshAttempt = 0
-                for queuedTask in queue {
-                    Task {
-                        await queuedTask.run(input: .retry)
-                    }
+        case let .success(dependency):
+            self.dependency = dependency
+            dependencyVersion += 1
+            for queuedTask in queue {
+                Task {
+                    await queuedTask.run(input: .retry)
                 }
-                queue.removeAll()
-                self.isRefreshing = false
-                return await run(task: task)
-                    .withTaskCancellation(isOriginTask: true)
-            case let .failure(failure):
-                for queuedTask in queue {
-                    Task {
-                        await queuedTask.run(input: .failure(failure))
-                    }
+            }
+            queue.removeAll()
+            self.refreshAttempt = 0
+            self.isRefreshing = false
+            return await run(task: task)
+                .withTaskCancellation(isOriginTask: true)
+        case let .failure(failure):
+            for queuedTask in queue {
+                Task {
+                    await queuedTask.run(input: .failure(failure))
                 }
-                queue.removeAll()
-                self.isRefreshing = false
-                return .failure(error: failure, isOriginTask: true)
-                    .withTaskCancellation(isOriginTask: true)
-            case .cancelled:
-                for queuedTask in queue {
-                    Task {
-                        await queuedTask.run(input: .cancelled)
-                    }
+            }
+            queue.removeAll()
+            self.refreshAttempt = 0
+            self.isRefreshing = false
+            return .failure(error: failure, isOriginTask: true)
+                .withTaskCancellation(isOriginTask: true)
+        case .cancelled:
+            for queuedTask in queue {
+                Task {
+                    await queuedTask.run(input: .cancelled)
                 }
-                queue.removeAll()
-                self.isRefreshing = false
-                return .cancelled(isOriginTask: true)
+            }
+            queue.removeAll()
+            self.refreshAttempt = 0
+            self.isRefreshing = false
+            return .cancelled(isOriginTask: true)
         }
     }
 }
+
 
