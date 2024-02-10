@@ -1,13 +1,14 @@
 
 import Foundation
 
+/// This is the result of a task, when running tasks you need to return this struct.
 public enum TaskResult<Success> {
     case success(Success)
     case failure(Error)
     case cancelled(isOriginTask: Bool)
     case updateDependency
     
-    func withTaskCancellation(isOriginTask: Bool) -> Self {
+    internal func withTaskCancellation(isOriginTask: Bool) -> Self {
         guard Task.isCancelled == false else {
             return .cancelled(isOriginTask: isOriginTask)
         }
@@ -15,22 +16,29 @@ public enum TaskResult<Success> {
     }
 }
 
+/// The underlying reason for why a refresh was required.
 public enum RefreshReason<Dependency> {
     case missingDependency
     case taskRequiredUpdate(dependency:Dependency)
 }
 
+
+/// Contains information for the refresh.
 public struct RefreshContext<Dependency> {
+    /// The refresh count, begins at 1 for the first refresh.
     public let refreshAttempt: Int
+    
+    /// The reason for the refresh occuring.
     public let reason:RefreshReason<Dependency>
 }
 
+/// The result of a refresh.
 public enum RefreshTaskResult<Dependency> {
     case success(Dependency)
     case failure(Error)
     case cancelled(isOriginTask: Bool)
     
-    func withTaskCancellation(isOriginTask: Bool) -> Self {
+    internal func withTaskCancellation(isOriginTask: Bool) -> Self {
         guard Task.isCancelled == false else {
             return .cancelled(isOriginTask: isOriginTask)
         }
@@ -38,6 +46,7 @@ public enum RefreshTaskResult<Dependency> {
     }
 }
 
+/// The final result of a task->refresh->task.
 public enum FinalResult<Success> {
     case success(success: Success)
     case failure(error: Error, isOriginTask: Bool)
@@ -84,6 +93,21 @@ private struct QueuedTask {
     }
 }
 
+/// A queue that has two unique features:
+/// - Provides a dependency for each running task
+/// - Switches between serial and concurrent mode depending on how tasks behave
+///
+/// #Dependencies
+/// When you queue a task it has an input parameter which is generic. I'll refer to that as the "dependency".
+/// The queue is generic over that type `Dependency`. A good way to understand it is that it could be
+/// and access token for an OAuth flow. Since each network requests needs this for the authorization header
+/// you can wrap each network call in this queue. And it's guaranteed that all tasks now will be provided with
+/// an access token.
+///
+/// #Serial concurrent modalities
+/// The default behaviour of the queue is concurrent.
+///
+/// When a task returns particular result
 public actor SmartQueue<Dependency> {
     private var dependency: Dependency?
     private var dependencyVersion: Int = 0
