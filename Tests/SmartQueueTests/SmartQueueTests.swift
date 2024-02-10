@@ -33,7 +33,7 @@ final class smart_queueTests: XCTestCase {
                 do {
                     return try await .success(requestPackage.request(bearer: accessToken))
                 } catch QueueTester.QueueTestError.unauthorized {
-                    return .updateDependency
+                    return .refreshDependency
                 } catch {
                     XCTFail()
                     fatalError()
@@ -115,7 +115,7 @@ final class smart_queueTests: XCTestCase {
             KnownResponse(response: .refresh(.success(uuidA)), description: "1 refresh"),
             KnownResponse(response: .task(.success("Hello 1")), description: "1 response"),
             KnownResponse(response: .task(.success("Hello 2")), description: "2 response"),
-            KnownResponse(response: .task(.updateDependency), description: "1 update"),
+            KnownResponse(response: .task(.refreshDependency), description: "1 update"),
             KnownResponse(response: .refresh(.success(uuidB)), description: "2 refresh"),
             KnownResponse(response: .task(.success("Hello 3")), description: "3 response"),
             KnownResponse(response: .task(.success("Hello 4")), description: "4 response"),
@@ -248,7 +248,7 @@ final class smart_queueTests: XCTestCase {
                     let _ = await queue.run { token -> TaskResult<String> in
                         let retVal:String? = await wonky.access(token: token)
                         guard let retVal else {
-                            return .updateDependency
+                            return .refreshDependency
                         }
                         return .success(retVal)
                     }

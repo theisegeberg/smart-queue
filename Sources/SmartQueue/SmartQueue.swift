@@ -6,7 +6,7 @@ public enum TaskResult<Success> {
     case success(Success)
     case failure(Error)
     case cancelled(isOriginTask: Bool)
-    case updateDependency
+    case refreshDependency
     
     internal func withTaskCancellation(isOriginTask: Bool) -> Self {
         guard Task.isCancelled == false else {
@@ -21,7 +21,6 @@ public enum RefreshReason<Dependency> {
     case missingDependency
     case taskRequiredUpdate(dependency:Dependency)
 }
-
 
 /// Contains information for the refresh.
 public struct RefreshContext<Dependency> {
@@ -52,7 +51,7 @@ public enum FinalResult<Success> {
     case failure(error: Error, isOriginTask: Bool)
     case cancelled(isOriginTask: Bool)
     
-    func withTaskCancellation(isOriginTask: Bool) -> Self {
+    internal func withTaskCancellation(isOriginTask: Bool) -> Self {
         guard Task.isCancelled == false else {
             return .cancelled(isOriginTask: isOriginTask)
         }
@@ -97,17 +96,18 @@ private struct QueuedTask {
 /// - Provides a dependency for each running task
 /// - Switches between serial and concurrent mode depending on how tasks behave
 ///
-/// #Dependencies
 /// When you queue a task it has an input parameter which is generic. I'll refer to that as the "dependency".
 /// The queue is generic over that type `Dependency`. A good way to understand it is that it could be
 /// and access token for an OAuth flow. Since each network requests needs this for the authorization header
 /// you can wrap each network call in this queue. And it's guaranteed that all tasks now will be provided with
 /// an access token.
 ///
-/// #Serial concurrent modalities
 /// The default behaviour of the queue is concurrent.
 ///
-/// When a task returns particular result
+/// When a task returns `TaskResult.refreshDependency` then the queue will switch to a serial mode.
+/// In the serial mode it will re-queue all currently running tasks if they also return `TaskResult.refreshDependency`.
+/// All new tasks will be queued immediately. Then the refresh task passed into the initialiser will get called
+/// once - and only once. If a new dependency comes out of that then all the tasks will be run again.
 public actor SmartQueue<Dependency> {
     private var dependency: Dependency?
     private var dependencyVersion: Int = 0
@@ -173,20 +173,20 @@ public actor SmartQueue<Dependency> {
                 case .cancelled:
                     // The task was cancelled
                     return .cancelled(isOriginTask: true)
-                case .updateDependency where isRefreshing,
-                        .updateDependency where taskRunWithVersion < dependencyVersion:
+                case .refreshDependency where isRefreshing,
+                        .refreshDependency where taskRunWithVersion < dependencyVersion:
                     // The task is currently refreshing
                     // The task was run with a lower dependency version
                     return await run(task: task)
                         .withTaskCancellation(isOriginTask: true)
-                case .updateDependency:
+                case .refreshDependency:
                     // Not refreshing
-                    return await updateDependency(reason: RefreshReason<Dependency>.taskRequiredUpdate(dependency: taskRunWithDependency), task: task)
+                    return await refreshDependency(reason: RefreshReason<Dependency>.taskRequiredUpdate(dependency: taskRunWithDependency), task: task)
                         .withTaskCancellation(isOriginTask: true)
                 }
             } else {
                 // There is no dependency present
-                return await updateDependency(reason: RefreshReason<Dependency>.missingDependency, task: task)
+                return await refreshDependency(reason: RefreshReason<Dependency>.missingDependency, task: task)
                     .withTaskCancellation(isOriginTask: true)
             }
             
@@ -208,7 +208,7 @@ public actor SmartQueue<Dependency> {
         }
     }
     
-    private func updateDependency<Success>(
+    private func refreshDependency<Success>(
         reason: RefreshReason<Dependency>,
         task: @escaping (Dependency) async -> TaskResult<Success>
     ) async -> FinalResult<Success> {
