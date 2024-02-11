@@ -133,7 +133,7 @@ public actor SmartQueue<Dependency> {
     public func run<Success>(
         task: @escaping (Dependency) async -> TaskResult<Success>
     ) async -> FinalResult<Success> {
-        await self.run(forceRun: false, task: task)
+        await self.runInternal(task: task)
     }
     
     /// Manually set the dependency.
@@ -142,21 +142,19 @@ public actor SmartQueue<Dependency> {
         self.dependency = dependency
     }
     
-    private func run<Success>(
-        forceRun: Bool = false,
+    private func runInternal<Success>(
         task: @escaping (Dependency) async -> TaskResult<Success>
     ) async -> FinalResult<Success> {
         if Task.isCancelled {
             return .cancelled(isOriginTask: true)
         }
-        if isRefreshing == false || forceRun == true {
+        if isRefreshing == false {
             // We're not refreshing or we're force running.
-            
-            let taskRunWithVersion = dependencyVersion
             
             if let dependency {
                 // There is a dependency present
                 
+                let taskRunWithVersion = dependencyVersion
                 let taskRunWithDependency = dependency
                 
                 switch await task(dependency)
@@ -181,13 +179,17 @@ public actor SmartQueue<Dependency> {
                         .withTaskCancellation(isOriginTask: true)
                 case .refreshDependency:
                     // Not refreshing
-                    return await refreshDependency(reason: RefreshReason<Dependency>.taskRequiredUpdate(dependency: taskRunWithDependency), task: task)
-                        .withTaskCancellation(isOriginTask: true)
+                    return await refreshDependency(
+                        reason: .taskRequiredUpdate(dependency: taskRunWithDependency),
+                        task: task)
+                    .withTaskCancellation(isOriginTask: true)
                 }
             } else {
                 // There is no dependency present
-                return await refreshDependency(reason: RefreshReason<Dependency>.missingDependency, task: task)
-                    .withTaskCancellation(isOriginTask: true)
+                return await refreshDependency(
+                    reason: .missingDependency,
+                    task: task)
+                .withTaskCancellation(isOriginTask: true)
             }
             
         } else {
@@ -198,7 +200,7 @@ public actor SmartQueue<Dependency> {
                     case .cancelled:
                         continuation.resume(returning: .cancelled(isOriginTask: false))
                     case .retry:
-                        let result = await self.run(forceRun: true, task: task)
+                        let result = await self.run(task: task)
                         continuation.resume(returning: result)
                     case let .failure(error):
                         continuation.resume(returning: .failure(error: error, isOriginTask: false))
@@ -220,14 +222,14 @@ public actor SmartQueue<Dependency> {
         case let .success(dependency):
             self.dependency = dependency
             dependencyVersion += 1
+            self.refreshAttempt = 0
+            self.isRefreshing = false
             for queuedTask in queue {
                 Task {
                     await queuedTask.run(input: .retry)
                 }
             }
             queue.removeAll()
-            self.refreshAttempt = 0
-            self.isRefreshing = false
             return await run(task: task)
                 .withTaskCancellation(isOriginTask: true)
         case let .failure(failure):
