@@ -140,6 +140,7 @@ public actor SmartQueue<Dependency> {
                 {
                 case let .success(success):
                     // The task was succesful
+                    self.refreshAttempt = 0
                     return .success(success: success)
                         .withTaskCancellation(isOriginTask: true)
                 case let .failure(failure):
@@ -202,7 +203,6 @@ public actor SmartQueue<Dependency> {
                 }
             }
             queue.removeAll()
-            self.refreshAttempt = 0
             self.isRefreshing = false
             return await run(task: task)
                 .withTaskCancellation(isOriginTask: true)
