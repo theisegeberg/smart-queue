@@ -10,17 +10,14 @@ let package = Package(
         .macOS(.v10_15),
     ],
     products: [
-        .library(
-            name: "SmartQueue",
-            targets: ["SmartQueue"]
+        .library(name: "SmartQueue", targets: ["SmartQueue"]
         ),
     ],
+    dependencies: [
+        .package(url: "https://github.com/apple/swift-docc-plugin", from: "1.0.0"),
+    ],
     targets: [
-        .target(
-            name: "SmartQueue"),
-        .testTarget(
-            name: "SmartQueueTests",
-            dependencies: ["SmartQueue"]
-        ),
+        .target(name: "SmartQueue"),
+        .testTarget(name: "SmartQueueTests", dependencies: ["SmartQueue"]),
     ]
 )

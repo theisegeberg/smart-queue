@@ -33,7 +33,7 @@ final class smart_queueTests: XCTestCase {
                 do {
                     return try await .success(requestPackage.request(bearer: accessToken))
                 } catch QueueTester.QueueTestError.unauthorized {
-                    return .updateDependency
+                    return .refreshDependency
                 } catch {
                     XCTFail()
                     fatalError()
@@ -115,7 +115,7 @@ final class smart_queueTests: XCTestCase {
             KnownResponse(response: .refresh(.success(uuidA)), description: "1 refresh"),
             KnownResponse(response: .task(.success("Hello 1")), description: "1 response"),
             KnownResponse(response: .task(.success("Hello 2")), description: "2 response"),
-            KnownResponse(response: .task(.updateDependency), description: "1 update"),
+            KnownResponse(response: .task(.refreshDependency), description: "1 update"),
             KnownResponse(response: .refresh(.success(uuidB)), description: "2 refresh"),
             KnownResponse(response: .task(.success("Hello 3")), description: "3 response"),
             KnownResponse(response: .task(.success("Hello 4")), description: "4 response"),
@@ -192,18 +192,29 @@ final class smart_queueTests: XCTestCase {
     
     func testBruteForce() async throws {
 
+        
+        let timeLogger = TimeLog()
+        
+        func timeLog(_ string:String, logger:TimeLog) {
+            Task {
+                await logger.add(string)
+            }
+        }
+        
         class WonkyResponder {
             var access:Int
             var refreshThreads:Int
+            let logger:TimeLog
             
-            init() {
+            init(logger:TimeLog) {
                 self.access = 0
                 self.refreshThreads = 0
+                self.logger = logger
             }
             
             func refresh() async -> Int {
                 try! await Task.sleep(nanoseconds: UInt64.random(in: 10..<10_000))
-                guard self.refreshThreads <= 1 else {
+                guard self.refreshThreads == 0 else {
                     XCTFail("No more than one refresh thread is allowed at one time")
                     fatalError()
                 }
@@ -211,44 +222,46 @@ final class smart_queueTests: XCTestCase {
                 defer {
                     self.refreshThreads -= 1
                 }
-                self.access += 1
+                timeLog("Refreshing to \(self.access)", logger: logger)
                 return self.access
             }
             
             func access(token:Int) async -> String? {
                 try! await Task.sleep(nanoseconds: UInt64.random(in: 10..<10_000))
-                guard token == access else {
-                    //print("Bad access \(token)")
+                timeLog("Accessing with \(token)", logger: logger)
+
+                guard token == self.access else {
+                    timeLog("Bad access with \(token)", logger: logger)
                     return nil
                 }
-                //print("Good access \(token)")
+                timeLog("Good access with \(token)", logger: logger)
                 return "ac:\(token)"
             }
             
             func reset() async {
                 try! await Task.sleep(nanoseconds: UInt64.random(in: 10..<10_000))
-                //print("Reset \(access)")
+                timeLog("Resets \(self.access) to \(self.access+1)", logger: logger)
                 self.access += 1
             }
             
         }
         
-        let wonky = WonkyResponder()
+        let wonky = WonkyResponder(logger: timeLogger)
         
         let queue = SmartQueue<Int> { context in
             return await .success(wonky.refresh())
         }
         
         for _ in 0..<10000 {
-            try! await Task.sleep(nanoseconds: UInt64.random(in: 1_0..<1_000_0))
+            try! await Task.sleep(nanoseconds: UInt64.random(in: 10..<1_000))
             Task {
-                if Int.random(in: 0..<10) < 3 {
+                if Int.random(in: 0..<10) < 2 {
                     await wonky.reset()
                 } else {
                     let _ = await queue.run { token -> TaskResult<String> in
                         let retVal:String? = await wonky.access(token: token)
                         guard let retVal else {
-                            return .updateDependency
+                            return .refreshDependency
                         }
                         return .success(retVal)
                     }
@@ -256,6 +269,7 @@ final class smart_queueTests: XCTestCase {
             }
         }
         try! await Task.sleep(nanoseconds: 1_000_000_00)
+        await print(timeLogger.textLog())
         
     }
     
@@ -311,6 +325,77 @@ final class smart_queueTests: XCTestCase {
         print(theLog)
         
         
+    }
+    
+    func testControlledResponsesWithFailures() async throws {
+        
+        
+        let timeLogger = TimeLog()
+        @Sendable func timeLog(_ string:String) {
+            Task {
+                await timeLogger.add(string)
+            }
+        }
+        
+        @Sendable func execute<T>(_ controlledResponse:ControlledResponse<TaskResult<T>>) async {
+            let r:FinalResult<T> = await smartQueue.run { token in
+                return await controlledResponse.getResponse()
+            }
+            timeLog("SmartQueue responded: \(r)")
+        }
+
+        @Sendable func executeMulti<T>(_ controlledResponse:ControlledMultiResponse<TaskResult<T>>) async {
+            let r:FinalResult<T> = await smartQueue.run { token in
+                return await controlledResponse.getResponse()
+            }
+            timeLog("SmartQueue responded: \(r)")
+        }
+
+        func makeRefresh(_ result:RefreshTaskResult<UUID>, count:Int) -> ControlledResponse<RefreshTaskResult<UUID>> {
+            ControlledResponse(response: result, description: "Refresh \(count)", logger: timeLog)
+        }
+        
+        func makeAccessSuccess(count:Int) -> ControlledResponse<TaskResult<String>> {
+            ControlledResponse(response: .success("Access \(count)"), description: "Access \(count)", logger: timeLog)
+        }
+        
+        func makeAccessRefresh(count:Int) -> ControlledMultiResponse<TaskResult<String>> {
+            ControlledMultiResponse(description: "Access update \(count)", responses: [.init(value: .refreshDependency), .init(value: .success("AccessX \(count)"))], logger: timeLog)
+            
+        }
+        
+        let refreshUuid1 = UUID()
+        let refresh1 = makeRefresh(.success(refreshUuid1), count: 1)
+        let access1 = makeAccessSuccess(count: 1)
+        let access2 = makeAccessSuccess(count: 2)
+        let update1 = makeAccessRefresh(count: 3)
+        let access3 = makeAccessSuccess(count: 4)
+
+        let smartQueue = SmartQueue<UUID> { context in
+            return await refresh1.getResponse()
+        }
+        
+        Task {
+            await execute(access1)
+            await execute(access2)
+            await executeMulti(update1)
+            await execute(access3)
+        }
+        
+        Task {
+            access1.respond()
+            access2.respond()
+            refresh1.respond()
+            update1.respond(index: 0)
+            update1.respond(index: 1)
+            access3.respond()
+            
+        }
+        
+        try! await Task.sleep(nanoseconds: 1_000_000_00)
+
+        let theLog = await timeLogger.textLog()
+        //print(theLog)
     }
     
 }
