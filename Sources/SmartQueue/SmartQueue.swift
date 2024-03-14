@@ -162,14 +162,17 @@ public actor SmartQueue<Dependency> {
                 {
                 case let .success(success):
                     // The task was succesful
+                    self.refreshAttempt = 0
                     return .success(success: success)
                         .withTaskCancellation(isOriginTask: true)
                 case let .failure(failure):
                     // The task failed
+                    self.refreshAttempt = 0
                     return .failure(error: failure, isOriginTask: true)
                         .withTaskCancellation(isOriginTask: true)
                 case .cancelled:
                     // The task was cancelled
+                    self.refreshAttempt = 0
                     return .cancelled(isOriginTask: true)
                 case .refreshDependency where isRefreshing,
                         .refreshDependency where taskRunWithVersion < dependencyVersion:
